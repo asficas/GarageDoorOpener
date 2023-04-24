@@ -1,5 +1,5 @@
 //
-//     October 2021 This is the working version!!!!
+//     April 2023 
 //
 // ESP32 connected to garage door UHF remote:
 // Garage is opened either via MQTT 
@@ -7,12 +7,13 @@
 // from the LoRa sender in the car.
 // The sketch is OTA enabled
 //
-// The LoRa receiver is a TTGO LoRa32-Oled 
+// A simple webserver is started to enable monitoring that the ESP32 is alive via a http request.
+//
+// The LoRa receiver is a TTGO LoRa32-Oled V2 with MAC D8:A0:1D:62:86:64
 //
 // The LoRa transmitter in the car is a Heltec 151 LoRa Node
 //
 
-//Libraries for LoRa
 #include <SPI.h>
 #include <LoRa.h>
 #include <PubSubClient.h>
@@ -20,6 +21,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WebServer.h>
 
 
 //Basic OTA Libraries
@@ -56,34 +58,84 @@ const long freq = 868E6;
 const int SF = 9;
 const long bw = 125E3;
 
-
-int lastCounter;
-
-// Replace the next variables with your SSID/Password combination
-const char* ssid = "SSID";
-const char* password = "PASSWD";
-// Add your MQTT Broker IP address, example:
-//const char* mqtt_server = "192.168.1.12";
-const char* mqtt_server = IPADDRESS";
-
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-
-WiFiClient espClient;
-PubSubClient client(espClient);
 long lastMsg = 0;
 char msg[50];
 int value = 0;
 
+int lastCounter;
 
-// LED Pin
-const int ledPin = 4;
+// Replace the next variables with your SSID/Password combination
+const char* ssid = "";
+const char* password = "";
 
+//  Pin 4 used to trigger the remote of the garage door
+const int DoorPin = 4;
+
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
+
+void callback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String messageTemp;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    messageTemp += (char)message[i];
+  }
+  Serial.println();
+
+  // Feel free to add more if statements to control more GPIOs with MQTT
+
+  // If a message is received on the topic esp32/output, you check if the message is either "on" or "off". 
+  // Changes the output state according to the message
+  if (String(topic) == "esp32/output") {
+    
+    Serial.print("Changing output to ");
+    if(messageTemp == "on"){
+      Serial.println("on");
+      digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
+      digitalWrite(DoorPin, LOW);           //activate Garagedoor UHF sender
+      delay(300);                       // wait for a second
+      digitalWrite(LED_BUILTIN, LOW);// turn the LED off by making the voltage LOW
+      digitalWrite(DoorPin, HIGH);     //deactivate Garagedoor UHF sender
+      delay(200);          
+    }
+    else if(messageTemp == "off"){
+      Serial.println("off");
+      digitalWrite(DoorPin, HIGH);
+    }
+     display.clearDisplay();
+     display.setTextColor(WHITE);
+     display.setTextSize(1);
+     display.setCursor(0,0);
+     display.print("GARAGE DOOR OPENED   VIA MQTT");
+     display.display();
+     long now = millis();
+     lastMsg = now;
+  }
+   long now = millis();
+  if (now - lastMsg > 5000) {
+    lastMsg = now;
+    display.clearDisplay();
+    display.display();
+  }
+}
+
+// Enter MQTT server IP below
+IPAddress server( , , , );
+
+WiFiClient espClient;
+PubSubClient client(server, 1883, callback, espClient);
+WebServer webserver(80);
+
+void handleRoot() {
+  webserver.send(200, "text/plain", "Hello from ESP32GarageDoor!");
+}
 
 
 void setup() {
-  
-  //BasicOTA SETUP BEGIN
-
   Serial.begin(115200);
   Serial.println("Booting");
   WiFi.mode(WIFI_STA);
@@ -98,14 +150,14 @@ void setup() {
   // ArduinoOTA.setPort(3232);
 
   // Hostname defaults to esp3232-[MAC]
-  ArduinoOTA.setHostname("Garage LoRa Receiver");
+  // ArduinoOTA.setHostname("myesp32");
 
   // No authentication by default
   // ArduinoOTA.setPassword("admin");
 
   // Password can be set with it's md5 value as well
-  // MD5(admin) = a743894a0e4a801fc321232f297a57a5
-  // ArduinoOTA.setPasswordHash("a743894a0e4a801fc321232f297a57a5");
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
   ArduinoOTA
     .onStart([]() {
@@ -138,26 +190,28 @@ void setup() {
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+
+  Serial.print("Attempting to connect to SSID: ");
+
+  WiFi.begin(ssid, password);
+
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
   
-  //BasicOTA SETUP END
-
-
-
-  
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);     //deactivate Garagedoor UHF sender
-  Serial.begin(115200);
-  setup_wifi();
-  client.setServer(mqtt_server, 1883);
+  client.setServer(server, 1883);
   client.setCallback(callback);
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(8, OUTPUT);    //A14 opin of heltec 151 node is arduino pin D28, used to open the garage door
-  digitalWrite(8, HIGH);     //deactivate Garagedoor UHF sender
+  
+  pinMode(DoorPin, OUTPUT);    //Pin 4 of ESP43 is used to open the garage door
+  digitalWrite(DoorPin, HIGH);     //deactivate Garagedoor UHF sender
  //reset OLED display via software
-  pinMode(OLED_RST, OUTPUT);
-  digitalWrite(OLED_RST, LOW);
-  delay(20);
-  digitalWrite(OLED_RST, HIGH);
+  
   //initialize OLED
   Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3c, false, false)) { // Address 0x3C for 128x32
@@ -190,6 +244,15 @@ void setup() {
   display.print("GARAGE DOOR AUTO         MQTT LORA OK");
   display.display();
   delay(200);
+  
+  
+  webserver.on("/", handleRoot);
+  webserver.on("/inline", []() {
+    webserver.send(200, "text/plain", "this works as well");
+  });
+
+  webserver.begin();
+  Serial.println("HTTP server started");
 }
 
 void setup_wifi() {
@@ -197,7 +260,7 @@ void setup_wifi() {
   delay(10);
   // We start by connecting to a WiFi network
   Serial.println();
-  Serial.print("Connecting to ");
+  Serial.print("Connecting to WiFi");
   Serial.println(ssid);
 
   WiFi.begin(ssid, password);
@@ -220,10 +283,11 @@ void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Create a random client ID
-    String clientId = "ESP8266Client-";
-    clientId += String(random(0xffff), HEX);
+    String clientId = "ESP32Garagedoor";
+    
     // Attempt to connect
-    if (client.connect(clientId.c_str(),"MQTTUSER","MQTTPASSWD")) {
+    // Set MQTT user and MQTT password below
+    if (client.connect("ESP32GarageDoor","","")) {
       Serial.println("connected");
             display.clearDisplay();
             display.setTextColor(WHITE);
@@ -247,54 +311,6 @@ void reconnect() {
 
 
 
-void callback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Message arrived on topic: ");
-  Serial.print(topic);
-  Serial.print(". Message: ");
-  String messageTemp;
-  
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)message[i]);
-    messageTemp += (char)message[i];
-  }
-  Serial.println();
-
-  // Feel free to add more if statements to control more GPIOs with MQTT
-
-  // If a message is received on the topic esp32/output, you check if the message is either "on" or "off". 
-  // Changes the output state according to the message
-  if (String(topic) == "esp32/output") {
-    
-    Serial.print("Changing output to ");
-    if(messageTemp == "on"){
-      Serial.println("on");
-      digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
-      digitalWrite(ledPin, LOW);           //activate Garagedoor UHF sender
-      delay(300);                       // wait for a second
-      digitalWrite(LED_BUILTIN, LOW);// turn the LED off by making the voltage LOW
-      digitalWrite(ledPin, HIGH);     //deactivate Garagedoor UHF sender
-      delay(200);          
-    }
-    else if(messageTemp == "off"){
-      Serial.println("off");
-      digitalWrite(ledPin, HIGH);
-    }
-     display.clearDisplay();
-     display.setTextColor(WHITE);
-     display.setTextSize(1);
-     display.setCursor(0,0);
-     display.print("GARAGE DOOR OPENED   VIA MQTT");
-     display.display();
-     long now = millis();
-     lastMsg = now;
-  }
-   long now = millis();
-  if (now - lastMsg > 5000) {
-    lastMsg = now;
-    display.clearDisplay();
-    display.display();
-  }
-}
 
 
 void loop() {
@@ -310,6 +326,8 @@ void loop() {
     reconnect();
   }
   client.loop();
+
+   webserver.handleClient();
 
   // try to parse packet
   int packetSize = LoRa.parsePacket();
@@ -333,10 +351,10 @@ void loop() {
     String value1 = jsonString.substring(8, 11);  // Vcc or heighth
     String value2 = jsonString.substring(23, 26); //counter
     digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
-    digitalWrite(ledPin, LOW);           //activate Garagedoor UHF sender
+    digitalWrite(DoorPin, LOW);           //activate Garagedoor UHF sender
     delay(300);                       // wait for a second
     digitalWrite(LED_BUILTIN, LOW);// turn the LED off by making the voltage LOW
-    digitalWrite(ledPin, HIGH);     //deactivate Garagedoor UHF sender
+    digitalWrite(DoorPin, HIGH);     //deactivate Garagedoor UHF sender
     delay(200);
      display.clearDisplay();
      display.setTextColor(WHITE);
